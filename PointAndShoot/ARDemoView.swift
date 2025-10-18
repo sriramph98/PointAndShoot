@@ -132,11 +132,9 @@ struct ARDemoView: View {
                 .padding(.bottom, 40)
             }
             
-            // Silhouette overlays (filled body shapes)
-            SilhouetteOverlayView(detectedPlayers: demoState.detectedPlayers)
-            
-            // Body tracking visualization (skeleton and joints on top)
+            // Body tracking visualization
             BodyTrackingDemoOverlay(detectedPlayers: demoState.detectedPlayers)
+                .allowsHitTesting(false)
             
             // Exit button
             VStack {
@@ -244,13 +242,11 @@ struct ARDemoContainer: UIViewRepresentable {
         private var visionDetector: VisionDemoDetector?
         private var frameCounter: Int = 0
         private let frameSkip: Int = 3
-        private var segmentationHelper: PersonSegmentationHelper?
         
         init(demoState: ARDemoState) {
             self.demoState = demoState
             super.init()
             self.visionDetector = VisionDemoDetector(demoState: demoState)
-            self.segmentationHelper = PersonSegmentationHelper()
         }
         
         func session(_ session: ARSession, didUpdate frame: ARFrame) {
@@ -262,41 +258,11 @@ struct ARDemoContainer: UIViewRepresentable {
             let pixelBuffer = frame.capturedImage
             let orientation = CGImagePropertyOrientation.right
             
-            // First detect players with body tracking
             visionDetector?.detectPlayers(
                 in: pixelBuffer,
                 orientation: orientation,
                 viewportSize: viewportSize
             )
-            
-            // Then generate silhouettes (async, doesn't block detection)
-            segmentationHelper?.generateSegmentationMask(
-                from: pixelBuffer,
-                orientation: orientation
-            ) { [weak self] maskBuffer in
-                guard let self = self,
-                      let maskBuffer = maskBuffer,
-                      let helper = self.segmentationHelper else {
-                    return
-                }
-                
-                // Generate colored silhouette
-                if let silhouetteImage = helper.createSilhouetteImage(
-                    from: maskBuffer,
-                    color: UIColor.cyan.withAlphaComponent(0.4)
-                ) {
-                    // Update detected players with silhouette
-                    DispatchQueue.main.async {
-                        if !self.demoState.detectedPlayers.isEmpty {
-                            // Add silhouette to first detected player
-                            // In production, you'd match silhouettes to specific players
-                            var updatedPlayers = self.demoState.detectedPlayers
-                            updatedPlayers[0].silhouetteImage = silhouetteImage
-                            self.demoState.detectedPlayers = updatedPlayers
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -471,8 +437,7 @@ class VisionDemoDetector {
                 playerID: UUID(),
                 playerName: "Person \(index + 1)",
                 faceRect: playerData.faceRect,
-                bodyJoints: playerData.bodyJoints,
-                silhouetteImage: nil  // Will be filled in by segmentation
+                bodyJoints: playerData.bodyJoints
             )
             detectedPlayers.append(detected)
         }
@@ -562,28 +527,6 @@ struct StatBadge: View {
             Text(label)
                 .font(.caption2)
                 .foregroundColor(.white.opacity(0.7))
-        }
-    }
-}
-
-// MARK: - Silhouette Overlay View
-
-struct SilhouetteOverlayView: View {
-    
-    let detectedPlayers: [DetectedPlayer]
-    
-    var body: some View {
-        GeometryReader { geometry in
-            ForEach(detectedPlayers, id: \.playerID) { detected in
-                if let silhouetteImage = detected.silhouetteImage {
-                    // Display the colored silhouette as an overlay
-                    Image(uiImage: silhouetteImage)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                        .allowsHitTesting(false)
-                }
-            }
         }
     }
 }

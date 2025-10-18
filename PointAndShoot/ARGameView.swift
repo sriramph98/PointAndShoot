@@ -12,36 +12,50 @@ import RealityKit
 struct ARGameView: View {
     
     @EnvironmentObject var gameState: GameState
+    @State private var viewSize: CGSize = .zero
     
     var body: some View {
-        ZStack {
-            // Main AR View
-            ARViewContainer()
-                .ignoresSafeArea()
-            
-            // Game HUD Overlay
-            VStack {
-                // Top HUD: Player health bars
-                HealthHUDView()
-                    .padding()
+        GeometryReader { geometry in
+            ZStack {
+                // Main AR View
+                ARViewContainer()
+                    .ignoresSafeArea()
                 
-                Spacer()
+                // Game HUD Overlay
+                VStack {
+                    // Top HUD: Player health bars
+                    HealthHUDView()
+                        .padding()
+                    
+                    Spacer()
+                    
+                    // Center: Crosshair
+                    CrosshairView()
+                    
+                    Spacer()
+                    
+                    // Bottom: Shoot button
+                    ShootButtonView(viewSize: geometry.size)
+                        .padding(.bottom, 40)
+                }
                 
-                // Center: Crosshair
-                CrosshairView()
+                // Player name overlays on detected faces
+                DetectedPlayerOverlaysView()
+                    .allowsHitTesting(false)
                 
-                Spacer()
+                // Body tracking points overlay
+                BodyTrackingOverlayView()
+                    .allowsHitTesting(false)
                 
-                // Bottom: Shoot button
-                ShootButtonView()
-                    .padding(.bottom, 40)
+                // Debug overlay (optional)
+                if gameState.debugMode {
+                    DebugOverlayView(viewSize: geometry.size)
+                        .allowsHitTesting(false)
+                }
             }
-            
-            // Player name overlays on detected faces
-            DetectedPlayerOverlaysView()
-            
-            // Body tracking points overlay
-            BodyTrackingOverlayView()
+            .onAppear {
+                viewSize = geometry.size
+            }
         }
     }
 }
@@ -259,16 +273,37 @@ struct PlayerHealthBar: View {
 
 struct CrosshairView: View {
     
+    @EnvironmentObject var gameState: GameState
+    
     var body: some View {
         ZStack {
+            // Outer ring
             Circle()
-                .stroke(Color.white, lineWidth: 2)
+                .stroke(gameState.showHitEffect ? Color.green : Color.white, lineWidth: 3)
+                .frame(width: 40, height: 40)
+            
+            // Inner ring
+            Circle()
+                .stroke(gameState.showHitEffect ? Color.green : Color.white, lineWidth: 2)
                 .frame(width: 30, height: 30)
             
+            // Center dot
             Circle()
-                .fill(Color.red)
-                .frame(width: 4, height: 4)
+                .fill(gameState.showHitEffect ? Color.green : Color.red)
+                .frame(width: 6, height: 6)
+            
+            // Crosshair lines
+            Rectangle()
+                .fill(Color.white)
+                .frame(width: 2, height: 20)
+            
+            Rectangle()
+                .fill(Color.white)
+                .frame(width: 20, height: 2)
         }
+        .opacity(gameState.showHitEffect ? 1.0 : 0.9)
+        .scaleEffect(gameState.showHitEffect ? 1.3 : 1.0)
+        .animation(.easeInOut(duration: 0.2), value: gameState.showHitEffect)
     }
 }
 
@@ -277,6 +312,7 @@ struct CrosshairView: View {
 struct ShootButtonView: View {
     
     @EnvironmentObject var gameState: GameState
+    let viewSize: CGSize
     
     var body: some View {
         Button(action: handleShoot) {
@@ -286,7 +322,7 @@ struct ShootButtonView: View {
                     .frame(width: 80, height: 80)
                     .shadow(radius: 10)
                 
-                Image(systemName: "scope")
+                Image(systemName: gameState.shootingCooldown ? "hourglass" : "scope")
                     .font(.system(size: 40))
                     .foregroundColor(.white)
             }
@@ -295,21 +331,36 @@ struct ShootButtonView: View {
     }
     
     private func handleShoot() {
-        // Get the ARView's coordinator to perform raycast
-        // We need to find the target player at screen center
+        // Calculate the actual center of the view (where the crosshair is)
+        let screenCenter = CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
         
-        let screenCenter = UIScreen.main.bounds.center
+        print("🎯 SHOOT! Center: \(screenCenter)")
+        print("📱 View size: \(viewSize)")
+        print("👥 Detected players: \(gameState.detectedPlayers.count)")
+        
+        // Check each detected player
+        for detected in gameState.detectedPlayers {
+            print("  - Player: \(detected.playerName)")
+            print("    Face rect: \(detected.faceRect)")
+            print("    Contains center: \(detected.faceRect.contains(screenCenter))")
+        }
         
         // Check if screen center intersects with any detected player face
         if let targetPlayerID = gameState.findTargetPlayer(at: screenCenter) {
-            print("Hit player: \(targetPlayerID)")
+            print("✅ HIT! Player: \(targetPlayerID)")
             gameState.registerHit(on: targetPlayerID)
             
-            // Visual/haptic feedback
+            // Strong haptic feedback for hit
             let impactFeedback = UIImpactFeedbackGenerator(style: .heavy)
             impactFeedback.impactOccurred()
+            
+            // Flash effect
+            gameState.showHitEffect = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                gameState.showHitEffect = false
+            }
         } else {
-            print("Missed - no player at crosshair")
+            print("❌ MISS - no player at crosshair")
             
             // Light feedback for miss
             let impactFeedback = UIImpactFeedbackGenerator(style: .light)
@@ -502,6 +553,51 @@ struct BodySkeletonView: View {
                     with: .color(lineColor),
                     lineWidth: 2
                 )
+            }
+        }
+    }
+}
+
+// MARK: - Debug Overlay
+
+struct DebugOverlayView: View {
+    
+    @EnvironmentObject var gameState: GameState
+    let viewSize: CGSize
+    
+    var body: some View {
+        ZStack {
+            // Screen center marker
+            Circle()
+                .fill(Color.yellow)
+                .frame(width: 10, height: 10)
+                .position(x: viewSize.width / 2, y: viewSize.height / 2)
+            
+            // Debug info
+            VStack {
+                Spacer()
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("DEBUG MODE")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.yellow)
+                    
+                    Text("View: \(Int(viewSize.width))x\(Int(viewSize.height))")
+                        .font(.caption2)
+                        .foregroundColor(.white)
+                    
+                    Text("Center: \(Int(viewSize.width/2)), \(Int(viewSize.height/2))")
+                        .font(.caption2)
+                        .foregroundColor(.white)
+                    
+                    Text("Detected: \(gameState.detectedPlayers.count)")
+                        .font(.caption2)
+                        .foregroundColor(.white)
+                }
+                .padding(8)
+                .background(Color.black.opacity(0.7))
+                .cornerRadius(8)
+                .padding()
             }
         }
     }

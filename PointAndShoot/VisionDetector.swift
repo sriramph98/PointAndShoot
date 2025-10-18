@@ -235,8 +235,7 @@ class VisionDetector {
                     playerID: player.id,
                     playerName: player.name,
                     faceRect: playerData.faceRect,
-                    bodyJoints: playerData.bodyJoints,
-                    silhouetteImage: nil  // Can be added in future enhancement
+                    bodyJoints: playerData.bodyJoints
                 )
                 detectedPlayers.append(detected)
             } else {

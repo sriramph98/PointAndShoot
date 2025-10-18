@@ -17,7 +17,6 @@
 		1A00000F295F4A7B00000008 /* VisionDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A00000E295F4A7B00000008 /* VisionDetector.swift */; };
 		1A000011295F4A7B00000009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A000010295F4A7B00000009 /* Assets.xcassets */; };
 		1A000013295F4A7B00000011 /* ARDemoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000012295F4A7B00000011 /* ARDemoView.swift */; };
-		1A000015295F4A7B00000012 /* PersonSegmentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000014295F4A7B00000012 /* PersonSegmentation.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -32,7 +31,6 @@
 		1A000010295F4A7B00000009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		1A000012295F4A7B00000010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		1A000012295F4A7B00000011 /* ARDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ARDemoView.swift; sourceTree = "<group>"; };
-		1A000014295F4A7B00000012 /* PersonSegmentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonSegmentation.swift; sourceTree = "<group>"; };
 		1AFFFFFF295F4A7B00000000 /* PointAndShoot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PointAndShoot.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -76,7 +74,6 @@
 				1A00000C295F4A7B00000007 /* ARGameView.swift */,
 				1A00000E295F4A7B00000008 /* VisionDetector.swift */,
 				1A000012295F4A7B00000011 /* ARDemoView.swift */,
-				1A000014295F4A7B00000012 /* PersonSegmentation.swift */,
 				1A000010295F4A7B00000009 /* Assets.xcassets */,
 			);
 			path = PointAndShoot;
@@ -160,7 +157,6 @@
 				1A00000D295F4A7B00000007 /* ARGameView.swift in Sources */,
 				1A00000F295F4A7B00000008 /* VisionDetector.swift in Sources */,
 				1A000013295F4A7B00000011 /* ARDemoView.swift in Sources */,
-				1A000015295F4A7B00000012 /* PersonSegmentation.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

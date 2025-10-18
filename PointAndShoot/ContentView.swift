@@ -12,13 +12,13 @@ struct ContentView: View {
     @EnvironmentObject var gameState: GameState
     @StateObject private var multipeerManager = MultipeerManager.shared
     @State private var playerName: String = ""
-    @State private var showingNameAlert: Bool = false
-    @State private var appState: AppState = .initial
+    @State private var appState: AppState = .home
     
     enum AppState {
-        case initial          // Enter name, choose to scan face
+        case home             // Home screen with Start button
+        case enterName        // Enter player name
         case scanning         // Scanning face
-        case profileReady     // Profile created, ready to host/join
+        case networking       // Host or Join party
         case lobby            // In lobby waiting
         case inGame           // Playing the game
         case gameOver         // Game finished
@@ -37,12 +37,23 @@ struct ContentView: View {
             
             // Main content based on app state
             switch appState {
-            case .initial:
-                InitialView(
-                    playerName: $playerName,
-                    showingNameAlert: $showingNameAlert,
-                    onScanFace: { appState = .scanning },
+            case .home:
+                HomeView(
+                    onStart: { 
+                        if playerName.isEmpty {
+                            appState = .enterName
+                        } else {
+                            appState = .scanning
+                        }
+                    },
                     onTestAR: { appState = .demoMode }
+                )
+                
+            case .enterName:
+                EnterNameView(
+                    playerName: $playerName,
+                    onContinue: { appState = .scanning },
+                    onBack: { appState = .home }
                 )
                 
             case .scanning:
@@ -54,7 +65,7 @@ struct ContentView: View {
                     
                     // Back button
                     Button(action: {
-                        appState = .initial
+                        appState = playerName.isEmpty ? .enterName : .home
                     }) {
                         HStack {
                             Image(systemName: "chevron.left")
@@ -68,11 +79,11 @@ struct ContentView: View {
                     .padding()
                 }
                 
-            case .profileReady:
+            case .networking:
                 NetworkingView(
                     playerName: playerName,
                     onConnected: { appState = .lobby },
-                    onBack: { appState = .initial }
+                    onBack: { appState = .home }
                 )
                 
             case .lobby:
@@ -81,7 +92,7 @@ struct ContentView: View {
                     onLeave: {
                         multipeerManager.disconnect()
                         multipeerManager.stopNetworking()
-                        appState = .profileReady
+                        appState = .networking
                     }
                 )
                 
@@ -121,14 +132,8 @@ struct ContentView: View {
                 
             case .demoMode:
                 ARDemoView(onExit: {
-                    appState = .initial
+                    appState = .home
                 })
-            }
-        }
-        .onAppear {
-            // Show name input on first launch
-            if playerName.isEmpty {
-                showingNameAlert = true
             }
         }
     }
@@ -136,7 +141,7 @@ struct ContentView: View {
     // MARK: - Helper Methods
     
     private func handleScanComplete() {
-        appState = .profileReady
+        appState = .networking
     }
     
     private func startGame() {
@@ -149,111 +154,75 @@ struct ContentView: View {
     private func resetGame() {
         gameState.resetGame()
         multipeerManager.disconnect()
-        appState = .initial
+        appState = .home
         gameState.gamePhase = .lobby
     }
 }
 
-// MARK: - Initial View (Enter Name & Scan Face)
+// MARK: - Home View
 
-struct InitialView: View {
+struct HomeView: View {
     
-    @Binding var playerName: String
-    @Binding var showingNameAlert: Bool
-    var onScanFace: () -> Void
+    var onStart: () -> Void
     var onTestAR: () -> Void
     
     var body: some View {
-        VStack(spacing: 40) {
+        VStack(spacing: 50) {
             
             Spacer()
             
             // Title
-            Text("Point & Shoot")
-                .font(.system(size: 48, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-            
-            Text("AR Multiplayer Face Battle")
-                .font(.headline)
-                .foregroundColor(.white.opacity(0.8))
-            
-            Spacer()
-            
-            // Player info
-            VStack(spacing: 15) {
-                HStack {
-                    Text("Player:")
-                        .foregroundColor(.white)
-                    Text(playerName.isEmpty ? "Not set" : playerName)
-                        .foregroundColor(.cyan)
-                        .fontWeight(.bold)
-                    
-                    Button(action: { showingNameAlert = true }) {
-                        Image(systemName: "pencil.circle.fill")
-                            .foregroundColor(.cyan)
-                    }
-                }
-                .font(.title3)
-            }
-            .padding()
-            .background(Color.white.opacity(0.1))
-            .cornerRadius(15)
-            .padding(.horizontal, 40)
-            
-            // Instructions
             VStack(spacing: 10) {
-                Image(systemName: "faceid")
-                    .font(.system(size: 60))
-                    .foregroundColor(.purple)
-                
-                Text("First, let's scan your face")
-                    .font(.title2)
-                    .fontWeight(.semibold)
+                Text("Point & Shoot")
+                    .font(.system(size: 52, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
+                    .shadow(color: .blue.opacity(0.3), radius: 10)
                 
-                Text("We'll create your profile for multiplayer")
-                    .font(.subheadline)
-                    .foregroundColor(.white.opacity(0.7))
-                    .multilineTextAlignment(.center)
+                Text("AR Multiplayer Face Battle")
+                    .font(.title3)
+                    .fontWeight(.medium)
+                    .foregroundColor(.white.opacity(0.8))
             }
-            .padding()
             
             Spacer()
             
-            // Buttons
-            VStack(spacing: 15) {
-                // Scan Face Button
-                Button(action: {
-                    guard !playerName.isEmpty else {
-                        showingNameAlert = true
-                        return
+            // Main action buttons
+            VStack(spacing: 20) {
+                // Start Game Button
+                Button(action: onStart) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 32))
+                        Text("Start")
+                            .font(.system(size: 28, weight: .bold))
                     }
-                    onScanFace()
-                }) {
-                    Label("Scan Face", systemImage: "faceid")
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.purple)
-                        .cornerRadius(15)
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.green, Color.blue],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .cornerRadius(20)
+                    .shadow(color: .green.opacity(0.4), radius: 10)
                 }
                 
                 // Test AR Features Button
                 Button(action: onTestAR) {
-                    HStack {
+                    HStack(spacing: 12) {
                         Image(systemName: "arkit")
-                            .font(.title3)
+                            .font(.system(size: 24))
                         Text("Test AR Features")
-                            .font(.title3)
-                            .fontWeight(.semibold)
+                            .font(.system(size: 20, weight: .semibold))
                         Image(systemName: "target")
-                            .font(.title3)
+                            .font(.system(size: 24))
                     }
                     .foregroundColor(.white)
                     .frame(maxWidth: .infinity)
-                    .padding()
+                    .padding(.vertical, 18)
                     .background(
                         LinearGradient(
                             colors: [Color.orange, Color.red],
@@ -261,28 +230,113 @@ struct InitialView: View {
                             endPoint: .trailing
                         )
                     )
-                    .cornerRadius(15)
+                    .cornerRadius(20)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 15)
+                        RoundedRectangle(cornerRadius: 20)
                             .stroke(Color.white.opacity(0.3), lineWidth: 1)
                     )
                 }
+                
+                Text("Try body tracking & face detection")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.6))
+                    .italic()
             }
             .padding(.horizontal, 40)
             
-            // Helper text for demo mode
-            Text("Try body tracking, face detection & shooting")
-                .font(.caption)
-                .foregroundColor(.white.opacity(0.6))
-                .italic()
-            
             Spacer()
         }
-        .alert("Enter Your Name", isPresented: $showingNameAlert) {
-            TextField("Name", text: $playerName)
-            Button("OK", action: {})
-        } message: {
-            Text("Enter your player name to continue")
+    }
+}
+
+// MARK: - Enter Name View
+
+struct EnterNameView: View {
+    
+    @Binding var playerName: String
+    var onContinue: () -> Void
+    var onBack: () -> Void
+    
+    @FocusState private var isNameFieldFocused: Bool
+    
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            VStack(spacing: 40) {
+                
+                Spacer()
+                
+                // Title
+                VStack(spacing: 15) {
+                    Image(systemName: "person.circle.fill")
+                        .font(.system(size: 80))
+                        .foregroundColor(.cyan)
+                    
+                    Text("What's your name?")
+                        .font(.system(size: 32, weight: .bold))
+                        .foregroundColor(.white)
+                    
+                    Text("Choose a name for multiplayer")
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.7))
+                }
+                
+                Spacer()
+                
+                // Name input
+                VStack(spacing: 20) {
+                    TextField("Enter your name", text: $playerName)
+                        .font(.title2)
+                        .foregroundColor(.white)
+                        .padding()
+                        .background(Color.white.opacity(0.15))
+                        .cornerRadius(15)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 15)
+                                .stroke(Color.cyan, lineWidth: 2)
+                        )
+                        .focused($isNameFieldFocused)
+                        .submitLabel(.done)
+                        .onSubmit {
+                            if !playerName.isEmpty {
+                                onContinue()
+                            }
+                        }
+                    
+                    Button(action: {
+                        guard !playerName.isEmpty else { return }
+                        onContinue()
+                    }) {
+                        Text("Continue")
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(playerName.isEmpty ? Color.gray : Color.cyan)
+                            .cornerRadius(15)
+                    }
+                    .disabled(playerName.isEmpty)
+                }
+                .padding(.horizontal, 40)
+                
+                Spacer()
+            }
+            .onAppear {
+                isNameFieldFocused = true
+            }
+            
+            // Back button
+            Button(action: onBack) {
+                HStack {
+                    Image(systemName: "chevron.left")
+                    Text("Back")
+                }
+                .foregroundColor(.white)
+                .padding()
+                .background(Color.black.opacity(0.6))
+                .cornerRadius(10)
+            }
+            .padding()
         }
     }
 }

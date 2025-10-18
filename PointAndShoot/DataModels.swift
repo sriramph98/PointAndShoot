@@ -7,7 +7,6 @@
 
 import Foundation
 import simd
-import UIKit
 
 // MARK: - Player Model
 
@@ -126,7 +125,6 @@ struct DetectedPlayer {
     let playerName: String
     let faceRect: CGRect  // Screen-space bounding box
     let bodyJoints: [BodyJoint]  // Body tracking points
-    var silhouetteImage: UIImage?  // Optional colored silhouette overlay
 }
 
 /// Body joint tracking point

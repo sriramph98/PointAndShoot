@@ -15,6 +15,8 @@ class GameState: ObservableObject {
     @Published var detectedPlayers: [DetectedPlayer] = []
     @Published var gamePhase: GamePhase = .lobby
     @Published var shootingCooldown: Bool = false
+    @Published var showHitEffect: Bool = false
+    @Published var debugMode: Bool = false
     
     // MARK: - Constants
     static let maxHealth = 100
