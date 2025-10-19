@@ -17,11 +17,17 @@ class GameState: ObservableObject {
     @Published var shootingCooldown: Bool = false
     @Published var showHitEffect: Bool = false
     @Published var debugMode: Bool = false
+    @Published var throwPower: Float = 0.0  // 0.0 to 1.0
+    @Published var isChargingThrow: Bool = false
     
     // MARK: - Constants
     static let maxHealth = 100
     static let damagePerHit = 20
     static let shootCooldownSeconds = 0.5
+    
+    // MARK: - Dynamic Power Settings
+    static let powerChargeRate: Float = 0.5      // Power gain per second (0.5 = 2 seconds to full)
+    static let baseThrowMultiplier: Float = 10.0 // Base force multiplier for throws
     
     // MARK: - Private Properties
     private var cancellables = Set<AnyCancellable>()

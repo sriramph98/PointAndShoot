@@ -69,19 +69,32 @@ struct ARViewContainer: UIViewRepresentable {
     func makeUIView(context: Context) -> ARView {
         let arView = ARView(frame: .zero)
         
-        // Enable physics
+        // Optimize rendering performance
+        arView.renderOptions = [.disableDepthOfField, .disableMotionBlur]
         arView.environment.lighting.intensityExponent = 1.5
         
-        // Configure AR session
+        // Configure AR session with optimizations
         let configuration = ARWorldTrackingConfiguration()
-        configuration.planeDetection = [.horizontal, .vertical]
-        arView.session.run(configuration)
+        
+        // Only enable plane detection when throwing projectiles (for physics)
+        // This significantly improves initial performance
+        configuration.planeDetection = [.horizontal]  // Only horizontal, not vertical
+        
+        // Optimize for performance
+        configuration.environmentTexturing = .none  // Disable if not needed
+        configuration.frameSemantics = []  // No extra frame semantics unless needed
+        
+        // Run session with smooth transition
+        arView.session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
         
         // Set session delegate
         let coordinator = context.coordinator
         arView.session.delegate = coordinator
         coordinator.arView = arView
         coordinator.viewportSize = arView.bounds.size
+        
+        // Pre-warm the coordinator (initializes Vision requests in background)
+        coordinator.prepareVisionDetection()
         
         // Store coordinator reference in gameState for sphere throwing
         gameState.arCoordinator = coordinator
@@ -112,22 +125,45 @@ struct ARViewContainer: UIViewRepresentable {
         
         private var visionDetector: VisionDetector?
         private var frameCounter: Int = 0
-        private let frameSkip: Int = 3  // Process every 3rd frame for performance
+        private let frameSkip: Int = 2  // Process every 2nd frame (was 3, now faster)
+        private var isVisionReady: Bool = false
+        
+        // Pre-warm haptic generators for instant feedback
+        private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
+        private let mediumHaptic = UIImpactFeedbackGenerator(style: .medium)
+        private let heavyHaptic = UIImpactFeedbackGenerator(style: .heavy)
         
         init(gameState: GameState) {
             self.gameState = gameState
             super.init()
-            self.visionDetector = VisionDetector(gameState: gameState)
+            
+            // Pre-warm haptic generators
+            lightHaptic.prepare()
+            mediumHaptic.prepare()
+            heavyHaptic.prepare()
+        }
+        
+        /// Pre-initialize Vision detection in background to avoid first-frame lag
+        func prepareVisionDetection() {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self = self else { return }
+                self.visionDetector = VisionDetector(gameState: self.gameState)
+                self.isVisionReady = true
+                print("✅ Vision detection pre-warmed and ready")
+            }
         }
         
         // MARK: - ARSessionDelegate
         
         func session(_ session: ARSession, didUpdate frame: ARFrame) {
-            // Skip frames for performance
+            // Skip frames for performance (adaptive based on vision readiness)
             frameCounter += 1
             if frameCounter % frameSkip != 0 {
                 return
             }
+            
+            // Don't process until Vision is ready (prevents initial lag)
+            guard isVisionReady else { return }
             
             // Get captured image
             let pixelBuffer = frame.capturedImage
@@ -135,7 +171,7 @@ struct ARViewContainer: UIViewRepresentable {
             // Determine orientation
             let orientation = CGImagePropertyOrientation.right  // Portrait mode
             
-            // Perform Vision detection
+            // Perform Vision detection (now on background queue in VisionDetector)
             visionDetector?.detectPlayers(
                 in: pixelBuffer,
                 orientation: orientation,
@@ -199,9 +235,9 @@ struct ARViewContainer: UIViewRepresentable {
         
         /// Throw a 3D object from the camera position in the direction of the crosshair
         /// - Parameters:
-        ///   - projectileName: Optional name of USDZ file (without extension) in the app bundle
-        ///                     If nil, uses default generated sphere
-        func throwProjectile(usdzName: String? = nil) {
+        ///   - usdzName: Optional name of USDZ file (without extension) in the app bundle
+        ///   - force: Throw force multiplier (default 3.0)
+        func throwProjectile(usdzName: String? = nil, force: Float = 3.0) {
             guard let arView = arView,
                   let currentFrame = arView.session.currentFrame else {
                 print("⚠️ Cannot throw projectile: AR view or frame not available")
@@ -262,12 +298,12 @@ struct ARViewContainer: UIViewRepresentable {
             )
             
             // Apply impulse for initial velocity
-            let throwForce: Float = 3.0  // Adjust this for throw strength
-            let impulse = direction * throwForce
+            let impulse = direction * force
             projectile.applyLinearImpulse(impulse, relativeTo: nil)
             
-            // Add slight upward arc
-            projectile.applyLinearImpulse([0, 0.5, 0], relativeTo: nil)
+            // Add upward arc proportional to force (smooth scaling)
+            let upwardArc = force * 0.2  // 20% of horizontal force as upward component
+            projectile.applyLinearImpulse([0, upwardArc, 0], relativeTo: nil)
             
             // Create anchor and add projectile to scene
             let anchor = AnchorEntity(world: spawnPosition)
@@ -341,8 +377,8 @@ struct ARViewContainer: UIViewRepresentable {
         }
         
         /// Convenience method for backward compatibility - throws default sphere
-        func throwSphere() {
-            throwProjectile(usdzName: nil)
+        func throwSphere(force: Float = 3.0) {
+            throwProjectile(usdzName: nil, force: force)
         }
     }
 }
@@ -470,23 +506,122 @@ struct ShootButtonView: View {
     @EnvironmentObject var gameState: GameState
     let viewSize: CGSize
     
+    @State private var chargeTimer: Timer?
+    @State private var chargeStartTime: Date?
+    
     var body: some View {
-        Button(action: handleShoot) {
-            ZStack {
-                Circle()
-                    .fill(gameState.shootingCooldown ? Color.gray : Color.red)
-                    .frame(width: 80, height: 80)
-                    .shadow(radius: 10)
-                
-                Image(systemName: gameState.shootingCooldown ? "hourglass" : "scope")
-                    .font(.system(size: 40))
+        ZStack {
+            // Power meter ring
+            Circle()
+                .trim(from: 0, to: CGFloat(gameState.throwPower))
+                .stroke(
+                    LinearGradient(
+                        colors: [.green, .yellow, .orange, .red],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    ),
+                    style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                )
+                .frame(width: 90, height: 90)
+                .rotationEffect(.degrees(-90))
+                .animation(.linear(duration: 0.016), value: gameState.throwPower)  // 60 FPS smooth animation
+            
+            // Main button
+            Button(action: {}) {
+                ZStack {
+                    Circle()
+                        .fill(gameState.shootingCooldown ? Color.gray : Color.red)
+                        .frame(width: 80, height: 80)
+                        .shadow(radius: 10)
+                        .scaleEffect(gameState.isChargingThrow ? 1.1 : 1.0)
+                        .animation(.easeInOut(duration: 0.1), value: gameState.isChargingThrow)
+
+                    if gameState.shootingCooldown {
+                        Image(systemName: "hourglass")
+                            .font(.system(size: 40))
+                            .foregroundColor(.white)
+                    } else if gameState.isChargingThrow {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 40))
+                            .foregroundColor(.yellow)
+                    } else {
+                        Image(systemName: "scope")
+                            .font(.system(size: 40))
+                            .foregroundColor(.white)
+                    }
+                }
+            }
+            .disabled(gameState.shootingCooldown)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        if !gameState.isChargingThrow && !gameState.shootingCooldown {
+                            startCharging()
+                        }
+                    }
+                    .onEnded { _ in
+                        if gameState.isChargingThrow {
+                            releaseShoot()
+                        }
+                    }
+            )
+            
+            // Power percentage indicator
+            if gameState.isChargingThrow {
+                Text("\(Int(gameState.throwPower * 100))%")
+                    .font(.caption2)
+                    .fontWeight(.bold)
                     .foregroundColor(.white)
+                    .offset(y: 55)
             }
         }
-        .disabled(gameState.shootingCooldown)
     }
     
-    private func handleShoot() {
+    private func startCharging() {
+        gameState.isChargingThrow = true
+        gameState.throwPower = 0.0
+        chargeStartTime = Date()
+        
+        // Light haptic on start
+        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+        impactFeedback.impactOccurred()
+        
+        // Start charging timer - smooth continuous charging
+        chargeTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { _ in
+            guard let startTime = chargeStartTime else { return }
+            
+            let elapsed = Float(Date().timeIntervalSince(startTime))
+            gameState.throwPower = min(elapsed * GameState.powerChargeRate, 1.0)
+            
+            // Smooth haptic feedback at quarter intervals
+            let previousPower = gameState.throwPower - (0.016 * GameState.powerChargeRate)
+            
+            if previousPower < 0.25 && gameState.throwPower >= 0.25 {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            } else if previousPower < 0.5 && gameState.throwPower >= 0.5 {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            } else if previousPower < 0.75 && gameState.throwPower >= 0.75 {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            } else if previousPower < 1.0 && gameState.throwPower >= 1.0 {
+                UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+            }
+        }
+    }
+    
+    private func releaseShoot() {
+        chargeTimer?.invalidate()
+        chargeTimer = nil
+        
+        let finalPower = gameState.throwPower
+        
+        gameState.isChargingThrow = false
+        gameState.throwPower = 0.0
+        
+        // Perform the actual shoot with power
+        handleShoot(power: finalPower)
+    }
+    
+    private func handleShoot(power: Float) {
         // Calculate the actual center of the view (where the crosshair is)
         let screenCenter = CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
         
@@ -498,9 +633,16 @@ struct ShootButtonView: View {
         print("👥 Detected Players: \(gameState.detectedPlayers.count)")
         print(String(repeating: "-", count: 50))
         
-        // 🎾 Throw a 3D sphere in the AR scene
+        // 🎾 Throw a 3D sphere in the AR scene with dynamic power
+        // Power scales smoothly from 0 to baseThrowMultiplier
+        // Use exponential scaling for more dramatic power increase
+        let powerCurve = pow(power, 1.2)  // Slight exponential curve for better feel
+        let throwForce = powerCurve * GameState.baseThrowMultiplier
+        
+        print("💪 Throw power: \(Int(power * 100))% - Force: \(String(format: "%.2f", throwForce)) m/s")
+        
         if let coordinator = gameState.arCoordinator as? ARViewContainer.Coordinator {
-            coordinator.throwSphere()
+            coordinator.throwProjectile(usdzName: nil, force: throwForce)
         }
         
         // Check each detected player

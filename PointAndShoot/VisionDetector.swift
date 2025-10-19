@@ -19,6 +19,9 @@ class VisionDetector {
     
     weak var gameState: GameState?
     
+    // Background queue for Vision processing to avoid blocking main thread
+    private let visionQueue = DispatchQueue(label: "com.pointandshoot.vision", qos: .userInitiated)
+    
     // MARK: - Initialization
     
     init(gameState: GameState) {
@@ -27,11 +30,13 @@ class VisionDetector {
     }
     
     private func setupRequests() {
-        // Body pose detection request
+        // Body pose detection request with optimizations
         bodyPoseRequest = VNDetectHumanBodyPoseRequest()
+        bodyPoseRequest?.revision = VNDetectHumanBodyPoseRequestRevision1  // Use specific revision
         
-        // Face detection request
+        // Face detection request with optimizations
         faceDetectionRequest = VNDetectFaceRectanglesRequest()
+        faceDetectionRequest?.revision = VNDetectFaceRectanglesRequestRevision3  // Latest stable
     }
     
     // MARK: - Detection Methods
@@ -46,65 +51,70 @@ class VisionDetector {
         
         guard let bodyRequest = bodyPoseRequest else { return }
         
-        // Create image request handler
-        let requestHandler = VNImageRequestHandler(
-            cvPixelBuffer: pixelBuffer,
-            orientation: orientation,
-            options: [:]
-        )
-        
-        do {
-            // First: Detect human bodies
-            try requestHandler.perform([bodyRequest])
+        // Perform detection on background queue to avoid blocking AR rendering
+        visionQueue.async { [weak self] in
+            guard let self = self else { return }
             
-            guard let bodyObservations = bodyRequest.results else {
-                updateDetectedPlayers([])
-                return
-            }
+            // Create image request handler
+            let requestHandler = VNImageRequestHandler(
+                cvPixelBuffer: pixelBuffer,
+                orientation: orientation,
+                options: [:]
+            )
             
-            // Second: For each body, detect faces in that region and extract joints
-            var detectedPlayersData: [(faceRect: CGRect, bodyJoints: [BodyJoint])] = []
+            do {
+                // First: Detect human bodies
+                try requestHandler.perform([bodyRequest])
             
-            for bodyObservation in bodyObservations {
-                // Calculate bounding box from body pose joints
-                guard let bodyBounds = calculateBoundingBox(from: bodyObservation) else {
-                    continue
+                guard let bodyObservations = bodyRequest.results else {
+                    self.updateDetectedPlayers([])
+                    return
                 }
                 
-                // Extract body joints
-                let bodyJoints = extractBodyJoints(from: bodyObservation, viewportSize: viewportSize)
+                // Second: For each body, detect faces in that region and extract joints
+                var detectedPlayersData: [(faceRect: CGRect, bodyJoints: [BodyJoint])] = []
                 
-                // Create a face detection request with region of interest
-                let faceRequest = VNDetectFaceRectanglesRequest()
-                faceRequest.regionOfInterest = bodyBounds
+                for bodyObservation in bodyObservations {
+                    // Calculate bounding box from body pose joints
+                    guard let bodyBounds = self.calculateBoundingBox(from: bodyObservation) else {
+                        continue
+                    }
+                    
+                    // Extract body joints
+                    let bodyJoints = self.extractBodyJoints(from: bodyObservation, viewportSize: viewportSize)
                 
-                // Perform face detection in the body region
-                let faceHandler = VNImageRequestHandler(
-                    cvPixelBuffer: pixelBuffer,
-                    orientation: orientation,
-                    options: [:]
-                )
-                
-                try? faceHandler.perform([faceRequest])
-                
-                if let faceObservations = faceRequest.results {
-                    for faceObservation in faceObservations {
-                        // Convert normalized coordinates to screen coordinates
-                        let screenRect = convertToScreenCoordinates(
-                            normalizedRect: faceObservation.boundingBox,
-                            viewportSize: viewportSize
-                        )
-                        detectedPlayersData.append((faceRect: screenRect, bodyJoints: bodyJoints))
+                    // Create a face detection request with region of interest
+                    let faceRequest = VNDetectFaceRectanglesRequest()
+                    faceRequest.regionOfInterest = bodyBounds
+                    
+                    // Perform face detection in the body region
+                    let faceHandler = VNImageRequestHandler(
+                        cvPixelBuffer: pixelBuffer,
+                        orientation: orientation,
+                        options: [:]
+                    )
+                    
+                    try? faceHandler.perform([faceRequest])
+                    
+                    if let faceObservations = faceRequest.results {
+                        for faceObservation in faceObservations {
+                            // Convert normalized coordinates to screen coordinates
+                            let screenRect = self.convertToScreenCoordinates(
+                                normalizedRect: faceObservation.boundingBox,
+                                viewportSize: viewportSize
+                            )
+                            detectedPlayersData.append((faceRect: screenRect, bodyJoints: bodyJoints))
+                        }
                     }
                 }
+                
+                // Update game state with detected faces and body joints
+                self.updateDetectedPlayers(detectedPlayersData)
+                
+            } catch {
+                print("Error performing vision requests: \(error.localizedDescription)")
+                self.updateDetectedPlayers([])
             }
-            
-            // Update game state with detected faces and body joints
-            updateDetectedPlayers(detectedPlayersData)
-            
-        } catch {
-            print("Error performing vision requests: \(error.localizedDescription)")
-            updateDetectedPlayers([])
         }
     }
     

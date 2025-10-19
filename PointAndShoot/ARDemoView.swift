@@ -15,6 +15,8 @@ struct ARDemoView: View {
     
     @StateObject private var demoState = ARDemoState()
     @State private var showInstructions = true
+    @State private var chargeTimer: Timer?
+    @State private var chargeStartTime: Date?
     
     var body: some View {
         ZStack {
@@ -104,20 +106,67 @@ struct ARDemoView: View {
                             .clipShape(Circle())
                     }
                     
-                    // Shoot Button
-                    Button(action: handleDemoShoot) {
-                        ZStack {
-                            Circle()
-                                .fill(demoState.shootingCooldown ? Color.gray : Color.red)
-                                .frame(width: 80, height: 80)
-                                .shadow(radius: 10)
-                            
-                            Image(systemName: "scope")
-                                .font(.system(size: 40))
+                    // Shoot Button with power meter
+                    ZStack {
+                        // Power meter ring
+                        Circle()
+                            .trim(from: 0, to: CGFloat(demoState.throwPower))
+                            .stroke(
+                                LinearGradient(
+                                    colors: [.cyan, .blue, .purple, .pink],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                ),
+                                style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                            )
+                            .frame(width: 90, height: 90)
+                            .rotationEffect(.degrees(-90))
+                            .animation(.linear(duration: 0.016), value: demoState.throwPower)  // 60 FPS smooth animation
+                        
+                        Button(action: {}) {
+                            ZStack {
+                                Circle()
+                                    .fill(demoState.shootingCooldown ? Color.gray : Color.red)
+                                    .frame(width: 80, height: 80)
+                                    .shadow(radius: 10)
+                                    .scaleEffect(demoState.isChargingThrow ? 1.1 : 1.0)
+                                    .animation(.easeInOut(duration: 0.1), value: demoState.isChargingThrow)
+                                
+                                if demoState.isChargingThrow {
+                                    Image(systemName: "bolt.fill")
+                                        .font(.system(size: 40))
+                                        .foregroundColor(.yellow)
+                                } else {
+                                    Image(systemName: "scope")
+                                        .font(.system(size: 40))
+                                        .foregroundColor(.white)
+                                }
+                            }
+                        }
+                        .disabled(demoState.shootingCooldown)
+                        .simultaneousGesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { _ in
+                                    if !demoState.isChargingThrow && !demoState.shootingCooldown {
+                                        startDemoCharging()
+                                    }
+                                }
+                                .onEnded { _ in
+                                    if demoState.isChargingThrow {
+                                        releaseDemoShoot()
+                                    }
+                                }
+                        )
+                        
+                        // Power percentage
+                        if demoState.isChargingThrow {
+                            Text("\(Int(demoState.throwPower * 100))%")
+                                .font(.caption2)
+                                .fontWeight(.bold)
                                 .foregroundColor(.white)
+                                .offset(y: 55)
                         }
                     }
-                    .disabled(demoState.shootingCooldown)
                     
                     // Reset Stats
                     Button(action: { demoState.resetStats() }) {
@@ -155,7 +204,51 @@ struct ARDemoView: View {
         }
     }
     
-    private func handleDemoShoot() {
+    private func startDemoCharging() {
+        demoState.isChargingThrow = true
+        demoState.throwPower = 0.0
+        chargeStartTime = Date()
+        
+        // Light haptic on start
+        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+        impactFeedback.impactOccurred()
+        
+        // Start charging timer - smooth continuous charging
+        chargeTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { _ in
+            guard let startTime = chargeStartTime else { return }
+            
+            let elapsed = Float(Date().timeIntervalSince(startTime))
+            demoState.throwPower = min(elapsed * GameState.powerChargeRate, 1.0)
+            
+            // Smooth haptic feedback at quarter intervals
+            let previousPower = demoState.throwPower - (0.016 * GameState.powerChargeRate)
+            
+            if previousPower < 0.25 && demoState.throwPower >= 0.25 {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            } else if previousPower < 0.5 && demoState.throwPower >= 0.5 {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            } else if previousPower < 0.75 && demoState.throwPower >= 0.75 {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            } else if previousPower < 1.0 && demoState.throwPower >= 1.0 {
+                UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+            }
+        }
+    }
+    
+    private func releaseDemoShoot() {
+        chargeTimer?.invalidate()
+        chargeTimer = nil
+        
+        let finalPower = demoState.throwPower
+        
+        demoState.isChargingThrow = false
+        demoState.throwPower = 0.0
+        
+        // Perform the actual shoot with power
+        handleDemoShoot(power: finalPower)
+    }
+    
+    private func handleDemoShoot(power: Float) {
         guard !demoState.shootingCooldown else { return }
         
         demoState.totalShots += 1
@@ -173,9 +266,16 @@ struct ARDemoView: View {
         print("📊 Total Shots: \(demoState.totalShots), Total Hits: \(demoState.successfulHits)")
         print(String(repeating: "-", count: 50))
         
-        // 🎾 Throw a 3D sphere in the AR scene
+        // 🎾 Throw a 3D sphere in the AR scene with dynamic power
+        // Power scales smoothly from 0 to baseThrowMultiplier
+        // Use exponential scaling for more dramatic power increase
+        let powerCurve = pow(power, 1.2)  // Slight exponential curve for better feel
+        let throwForce = powerCurve * GameState.baseThrowMultiplier
+        
+        print("💪 Throw power: \(Int(power * 100))% - Force: \(String(format: "%.2f", throwForce)) m/s")
+        
         if let coordinator = demoState.arCoordinator as? ARDemoContainer.Coordinator {
-            coordinator.throwSphere()
+            coordinator.throwProjectile(usdzName: nil, force: throwForce)
         }
         
         var hitDetected = false
@@ -232,6 +332,8 @@ class ARDemoState: ObservableObject {
     @Published var totalShots: Int = 0
     @Published var successfulHits: Int = 0
     @Published var shootingCooldown: Bool = false
+    @Published var throwPower: Float = 0.0  // 0.0 to 1.0
+    @Published var isChargingThrow: Bool = false
     
     // Weak reference to avoid retain cycle
     weak var arCoordinator: AnyObject?
@@ -251,19 +353,26 @@ struct ARDemoContainer: UIViewRepresentable {
     func makeUIView(context: Context) -> ARView {
         let arView = ARView(frame: .zero)
         
-        // Enable physics
+        // Optimize rendering performance
+        arView.renderOptions = [.disableDepthOfField, .disableMotionBlur]
         arView.environment.lighting.intensityExponent = 1.5
         
-        // Configure AR session
+        // Configure AR session with optimizations
         let configuration = ARWorldTrackingConfiguration()
-        configuration.planeDetection = [.horizontal, .vertical]
-        arView.session.run(configuration)
+        configuration.planeDetection = [.horizontal]  // Only horizontal for better performance
+        configuration.environmentTexturing = .none
+        configuration.frameSemantics = []
+        
+        arView.session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
         
         // Set session delegate
         let coordinator = context.coordinator
         arView.session.delegate = coordinator
         coordinator.arView = arView
         coordinator.viewportSize = arView.bounds.size
+        
+        // Pre-warm the coordinator
+        coordinator.prepareVisionDetection()
         
         // Store coordinator reference for sphere throwing
         demoState.arCoordinator = coordinator
@@ -293,12 +402,22 @@ struct ARDemoContainer: UIViewRepresentable {
         
         private var visionDetector: VisionDemoDetector?
         private var frameCounter: Int = 0
-        private let frameSkip: Int = 3
+        private let frameSkip: Int = 2  // Faster (was 3)
+        private var isVisionReady: Bool = false
         
         init(demoState: ARDemoState) {
             self.demoState = demoState
             super.init()
-            self.visionDetector = VisionDemoDetector(demoState: demoState)
+        }
+        
+        /// Pre-initialize Vision detection in background
+        func prepareVisionDetection() {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self = self else { return }
+                self.visionDetector = VisionDemoDetector(demoState: self.demoState)
+                self.isVisionReady = true
+                print("✅ Demo Vision detection pre-warmed")
+            }
         }
         
         func session(_ session: ARSession, didUpdate frame: ARFrame) {
@@ -306,6 +425,9 @@ struct ARDemoContainer: UIViewRepresentable {
             if frameCounter % frameSkip != 0 {
                 return
             }
+            
+            // Don't process until Vision is ready
+            guard isVisionReady else { return }
             
             let pixelBuffer = frame.capturedImage
             let orientation = CGImagePropertyOrientation.right
@@ -321,9 +443,9 @@ struct ARDemoContainer: UIViewRepresentable {
         
         /// Throw a 3D object from the camera position in the direction of the crosshair
         /// - Parameters:
-        ///   - projectileName: Optional name of USDZ file (without extension) in the app bundle
-        ///                     If nil, uses default generated sphere
-        func throwProjectile(usdzName: String? = nil) {
+        ///   - usdzName: Optional name of USDZ file (without extension) in the app bundle
+        ///   - force: Throw force multiplier (default 3.0)
+        func throwProjectile(usdzName: String? = nil, force: Float = 3.0) {
             guard let arView = arView,
                   let currentFrame = arView.session.currentFrame else {
                 print("⚠️ Cannot throw projectile: AR view or frame not available")
@@ -384,12 +506,12 @@ struct ARDemoContainer: UIViewRepresentable {
             )
             
             // Apply impulse for initial velocity
-            let throwForce: Float = 3.0  // Adjust this for throw strength
-            let impulse = direction * throwForce
+            let impulse = direction * force
             projectile.applyLinearImpulse(impulse, relativeTo: nil)
             
-            // Add slight upward arc
-            projectile.applyLinearImpulse([0, 0.5, 0], relativeTo: nil)
+            // Add upward arc proportional to force (smooth scaling)
+            let upwardArc = force * 0.2  // 20% of horizontal force as upward component
+            projectile.applyLinearImpulse([0, upwardArc, 0], relativeTo: nil)
             
             // Create anchor and add projectile to scene
             let anchor = AnchorEntity(world: spawnPosition)
@@ -463,8 +585,8 @@ struct ARDemoContainer: UIViewRepresentable {
         }
         
         /// Convenience method for backward compatibility - throws default sphere
-        func throwSphere() {
-            throwProjectile(usdzName: nil)
+        func throwSphere(force: Float = 3.0) {
+            throwProjectile(usdzName: nil, force: force)
         }
     }
 }
