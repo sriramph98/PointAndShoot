@@ -164,9 +164,34 @@ struct ARDemoView: View {
         // Check if hit any detected face
         let screenCenter = CGPoint(x: UIScreen.main.bounds.midX, y: UIScreen.main.bounds.midY)
         
-        for detected in demoState.detectedPlayers {
-            if detected.faceRect.contains(screenCenter) {
+        print("\n" + String(repeating: "=", count: 50))
+        print("🎯 DEMO SHOOTING!")
+        print(String(repeating: "=", count: 50))
+        print("📍 Screen Center: (\(Int(screenCenter.x)), \(Int(screenCenter.y)))")
+        print("📱 Screen Size: \(Int(UIScreen.main.bounds.width)) x \(Int(UIScreen.main.bounds.height))")
+        print("👥 Detected Players: \(demoState.detectedPlayers.count)")
+        print("📊 Total Shots: \(demoState.totalShots), Total Hits: \(demoState.successfulHits)")
+        print(String(repeating: "-", count: 50))
+        
+        // 🎾 Throw a 3D sphere in the AR scene
+        if let coordinator = demoState.arCoordinator as? ARDemoContainer.Coordinator {
+            coordinator.throwSphere()
+        }
+        
+        var hitDetected = false
+        for (index, detected) in demoState.detectedPlayers.enumerated() {
+            let contains = detected.faceRect.contains(screenCenter)
+            let distance = distanceFromCenter(rect: detected.faceRect, to: screenCenter)
+            
+            print("Player \(index + 1): \(detected.playerName)")
+            print("  📦 Face Rect: x=\(Int(detected.faceRect.minX)), y=\(Int(detected.faceRect.minY)), w=\(Int(detected.faceRect.width)), h=\(Int(detected.faceRect.height))")
+            print("  🎯 Contains Center: \(contains ? "✅ YES" : "❌ NO")")
+            print("  📏 Distance from center: \(Int(distance)) pixels")
+            
+            if contains {
+                print("✅ ✅ ✅ HIT CONFIRMED! ✅ ✅ ✅")
                 demoState.successfulHits += 1
+                hitDetected = true
                 
                 // Visual feedback
                 let impactFeedback = UIImpactFeedbackGenerator(style: .heavy)
@@ -175,10 +200,28 @@ struct ARDemoView: View {
             }
         }
         
+        if !hitDetected {
+            print("❌ ❌ ❌ MISS ❌ ❌ ❌")
+            print("No face at crosshair position")
+            
+            // Light feedback for miss
+            let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+            impactFeedback.impactOccurred()
+        }
+        
+        print(String(repeating: "=", count: 50) + "\n")
+        
         // Cooldown
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             demoState.shootingCooldown = false
         }
+    }
+    
+    private func distanceFromCenter(rect: CGRect, to point: CGPoint) -> CGFloat {
+        let rectCenter = CGPoint(x: rect.midX, y: rect.midY)
+        let dx = point.x - rectCenter.x
+        let dy = point.y - rectCenter.y
+        return sqrt(dx * dx + dy * dy)
     }
 }
 
@@ -189,6 +232,9 @@ class ARDemoState: ObservableObject {
     @Published var totalShots: Int = 0
     @Published var successfulHits: Int = 0
     @Published var shootingCooldown: Bool = false
+    
+    // Weak reference to avoid retain cycle
+    weak var arCoordinator: AnyObject?
     
     func resetStats() {
         totalShots = 0
@@ -205,6 +251,9 @@ struct ARDemoContainer: UIViewRepresentable {
     func makeUIView(context: Context) -> ARView {
         let arView = ARView(frame: .zero)
         
+        // Enable physics
+        arView.environment.lighting.intensityExponent = 1.5
+        
         // Configure AR session
         let configuration = ARWorldTrackingConfiguration()
         configuration.planeDetection = [.horizontal, .vertical]
@@ -215,6 +264,9 @@ struct ARDemoContainer: UIViewRepresentable {
         arView.session.delegate = coordinator
         coordinator.arView = arView
         coordinator.viewportSize = arView.bounds.size
+        
+        // Store coordinator reference for sphere throwing
+        demoState.arCoordinator = coordinator
         
         return arView
     }
@@ -263,6 +315,156 @@ struct ARDemoContainer: UIViewRepresentable {
                 orientation: orientation,
                 viewportSize: viewportSize
             )
+        }
+        
+        // MARK: - Projectile Throwing
+        
+        /// Throw a 3D object from the camera position in the direction of the crosshair
+        /// - Parameters:
+        ///   - projectileName: Optional name of USDZ file (without extension) in the app bundle
+        ///                     If nil, uses default generated sphere
+        func throwProjectile(usdzName: String? = nil) {
+            guard let arView = arView,
+                  let currentFrame = arView.session.currentFrame else {
+                print("⚠️ Cannot throw projectile: AR view or frame not available")
+                return
+            }
+            
+            // Get camera transform
+            let cameraTransform = currentFrame.camera.transform
+            
+            // Extract camera position
+            let cameraPosition = SIMD3<Float>(
+                cameraTransform.columns.3.x,
+                cameraTransform.columns.3.y,
+                cameraTransform.columns.3.z
+            )
+            
+            // Extract camera forward direction (negative Z in camera space)
+            let cameraForward = SIMD3<Float>(
+                -cameraTransform.columns.2.x,
+                -cameraTransform.columns.2.y,
+                -cameraTransform.columns.2.z
+            )
+            
+            // Normalize direction
+            let direction = normalize(cameraForward)
+            
+            // Position projectile slightly in front of camera
+            let spawnDistance: Float = 0.3  // 30cm in front
+            let spawnPosition = cameraPosition + (direction * spawnDistance)
+            
+            print("🎾 Throwing projectile:")
+            print("  Camera pos: \(cameraPosition)")
+            print("  Spawn pos: \(spawnPosition)")
+            print("  Direction: \(direction)")
+            
+            // Create projectile entity
+            let projectile = createProjectileEntity(usdzName: usdzName)
+            
+            // Set position
+            projectile.position = spawnPosition
+            
+            // Add physics - make it dynamic with collision
+            // Use bounding box for collision shape
+            let bounds = projectile.visualBounds(relativeTo: nil)
+            let size = bounds.extents
+            let physicsShape = ShapeResource.generateBox(size: size)
+            projectile.collision = CollisionComponent(shapes: [physicsShape])
+            
+            let physicsMaterial = PhysicsMaterialResource.generate(
+                friction: 0.5,
+                restitution: 0.8  // Bounciness
+            )
+            
+            projectile.physicsBody = PhysicsBodyComponent(
+                massProperties: .default,
+                material: physicsMaterial,
+                mode: .dynamic
+            )
+            
+            // Apply impulse for initial velocity
+            let throwForce: Float = 3.0  // Adjust this for throw strength
+            let impulse = direction * throwForce
+            projectile.applyLinearImpulse(impulse, relativeTo: nil)
+            
+            // Add slight upward arc
+            projectile.applyLinearImpulse([0, 0.5, 0], relativeTo: nil)
+            
+            // Create anchor and add projectile to scene
+            let anchor = AnchorEntity(world: spawnPosition)
+            anchor.addChild(projectile)
+            arView.scene.addAnchor(anchor)
+            
+            print("✅ Projectile added to scene with impulse: \(impulse)")
+            
+            // Remove projectile after 5 seconds to avoid clutter
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                anchor.removeFromParent()
+            }
+        }
+        
+        /// Create a projectile entity - either from USDZ or generated sphere
+        /// - Parameter usdzName: Optional USDZ filename (without extension)
+        /// - Returns: ModelEntity ready to be thrown
+        private func createProjectileEntity(usdzName: String?) -> ModelEntity {
+            if let usdzName = usdzName {
+                // Try to load USDZ model from bundle
+                if let modelEntity = loadUSDZModel(named: usdzName) {
+                    print("✅ Loaded USDZ model: \(usdzName)")
+                    return modelEntity
+                } else {
+                    print("⚠️ Failed to load USDZ '\(usdzName)', falling back to sphere")
+                }
+            }
+            
+            // Default: Create a generated sphere
+            let sphereRadius: Float = 0.05  // 5cm radius
+            return ModelEntity(
+                mesh: .generateSphere(radius: sphereRadius),
+                materials: [SimpleMaterial(color: .cyan, isMetallic: true)]
+            )
+        }
+        
+        /// Load a USDZ model from the app bundle
+        /// - Parameter name: Filename without extension (e.g., "ball", "rock", "toy_ball")
+        /// - Returns: ModelEntity if successful, nil otherwise
+        private func loadUSDZModel(named name: String) -> ModelEntity? {
+            // Try loading from bundle
+            guard let url = Bundle.main.url(forResource: name, withExtension: "usdz") else {
+                print("⚠️ USDZ file not found in bundle: \(name).usdz")
+                return nil
+            }
+            
+            do {
+                // Load entity and find ModelEntity
+                let loadedEntity = try Entity.load(contentsOf: url)
+                
+                // If it's already a ModelEntity, return it
+                if let modelEntity = loadedEntity as? ModelEntity {
+                    print("✅ Successfully loaded USDZ from: \(url.lastPathComponent)")
+                    return modelEntity
+                }
+                
+                // Otherwise, search for first ModelEntity in hierarchy
+                for child in loadedEntity.children {
+                    if let modelEntity = child as? ModelEntity {
+                        print("✅ Successfully loaded USDZ from: \(url.lastPathComponent)")
+                        return modelEntity
+                    }
+                }
+                
+                print("⚠️ No ModelEntity found in USDZ file: \(name)")
+                return nil
+            } catch {
+                print("❌ Error loading USDZ model '\(name)': \(error.localizedDescription)")
+                return nil
+            }
+        }
+        
+        /// Convenience method for backward compatibility - throws default sphere
+        func throwSphere() {
+            throwProjectile(usdzName: nil)
         }
     }
 }
@@ -466,25 +668,116 @@ struct BodyTrackingDemoOverlay: View {
                 // Draw skeleton
                 BodySkeletonView(joints: detected.bodyJoints)
                 
-                // Face overlay
-                VStack(spacing: 4) {
-                    Text(detected.playerName)
-                        .font(.caption)
-                        .fontWeight(.bold)
+                // Face box with enhanced marking
+                let screenCenter = CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                let isTargeted = detected.faceRect.contains(screenCenter)
+                
+                // Face bounding box overlay
+                ZStack {
+                    // Thick colored border
+                    Rectangle()
+                        .stroke(isTargeted ? Color.green : Color.cyan, lineWidth: 4)
+                        .frame(width: detected.faceRect.width, height: detected.faceRect.height)
+                        .position(x: detected.faceRect.midX, y: detected.faceRect.midY)
+                        .shadow(color: isTargeted ? .green : .cyan, radius: 8)
+                    
+                    // Corner brackets
+                    DemoCornerBrackets2(
+                        width: detected.faceRect.width,
+                        height: detected.faceRect.height,
+                        color: isTargeted ? .green : .cyan
+                    )
+                    .position(x: detected.faceRect.midX, y: detected.faceRect.midY)
+                    
+                    // Pulsing effect when targeted
+                    if isTargeted {
+                        Rectangle()
+                            .fill(Color.green.opacity(0.1))
+                            .frame(width: detected.faceRect.width, height: detected.faceRect.height)
+                            .position(x: detected.faceRect.midX, y: detected.faceRect.midY)
+                    }
+                }
+                
+                // Face info overlay
+                VStack(spacing: 8) {
+                    // Player name tag
+                    HStack(spacing: 6) {
+                        Image(systemName: isTargeted ? "scope" : "person.fill")
+                            .font(.caption)
+                        Text(detected.playerName)
+                            .font(.headline)
+                            .fontWeight(.bold)
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(isTargeted ? Color.green : Color.cyan)
+                    .cornerRadius(8)
+                    .shadow(radius: 5)
+                    
+                    // Target lock indicator
+                    if isTargeted {
+                        HStack(spacing: 4) {
+                            Image(systemName: "target")
+                                .font(.caption2)
+                            Text("LOCKED")
+                                .font(.caption2)
+                                .fontWeight(.bold)
+                        }
                         .foregroundColor(.white)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(Color.cyan.opacity(0.8))
+                        .background(Color.green)
                         .cornerRadius(6)
+                    }
                 }
-                .position(x: detected.faceRect.midX, y: detected.faceRect.minY - 20)
-                .overlay(
-                    Rectangle()
-                        .stroke(Color.cyan, lineWidth: 2)
-                        .frame(width: detected.faceRect.width, height: detected.faceRect.height)
-                        .position(x: detected.faceRect.midX, y: detected.faceRect.midY)
-                )
+                .position(x: detected.faceRect.midX, y: detected.faceRect.minY - 30)
+                .animation(.easeInOut(duration: 0.3), value: isTargeted)
             }
+        }
+    }
+}
+
+// MARK: - Demo Corner Brackets
+
+struct DemoCornerBrackets2: View {
+    let width: CGFloat
+    let height: CGFloat
+    let color: Color
+    
+    var body: some View {
+        ZStack {
+            // Top-left
+            Path { path in
+                path.move(to: CGPoint(x: -width/2 + 20, y: -height/2))
+                path.addLine(to: CGPoint(x: -width/2, y: -height/2))
+                path.addLine(to: CGPoint(x: -width/2, y: -height/2 + 20))
+            }
+            .stroke(color, lineWidth: 6)
+            
+            // Top-right
+            Path { path in
+                path.move(to: CGPoint(x: width/2 - 20, y: -height/2))
+                path.addLine(to: CGPoint(x: width/2, y: -height/2))
+                path.addLine(to: CGPoint(x: width/2, y: -height/2 + 20))
+            }
+            .stroke(color, lineWidth: 6)
+            
+            // Bottom-left
+            Path { path in
+                path.move(to: CGPoint(x: -width/2 + 20, y: height/2))
+                path.addLine(to: CGPoint(x: -width/2, y: height/2))
+                path.addLine(to: CGPoint(x: -width/2, y: height/2 - 20))
+            }
+            .stroke(color, lineWidth: 6)
+            
+            // Bottom-right
+            Path { path in
+                path.move(to: CGPoint(x: width/2 - 20, y: height/2))
+                path.addLine(to: CGPoint(x: width/2, y: height/2))
+                path.addLine(to: CGPoint(x: width/2, y: height/2 - 20))
+            }
+            .stroke(color, lineWidth: 6)
         }
     }
 }

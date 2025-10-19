@@ -69,6 +69,9 @@ struct ARViewContainer: UIViewRepresentable {
     func makeUIView(context: Context) -> ARView {
         let arView = ARView(frame: .zero)
         
+        // Enable physics
+        arView.environment.lighting.intensityExponent = 1.5
+        
         // Configure AR session
         let configuration = ARWorldTrackingConfiguration()
         configuration.planeDetection = [.horizontal, .vertical]
@@ -79,6 +82,9 @@ struct ARViewContainer: UIViewRepresentable {
         arView.session.delegate = coordinator
         coordinator.arView = arView
         coordinator.viewportSize = arView.bounds.size
+        
+        // Store coordinator reference in gameState for sphere throwing
+        gameState.arCoordinator = coordinator
         
         return arView
     }
@@ -187,6 +193,156 @@ struct ARViewContainer: UIViewRepresentable {
             let screenY = (1.0 - ndcY) * 0.5 * Float(viewportSize.height)
             
             return CGPoint(x: CGFloat(screenX), y: CGFloat(screenY))
+        }
+        
+        // MARK: - Projectile Throwing
+        
+        /// Throw a 3D object from the camera position in the direction of the crosshair
+        /// - Parameters:
+        ///   - projectileName: Optional name of USDZ file (without extension) in the app bundle
+        ///                     If nil, uses default generated sphere
+        func throwProjectile(usdzName: String? = nil) {
+            guard let arView = arView,
+                  let currentFrame = arView.session.currentFrame else {
+                print("⚠️ Cannot throw projectile: AR view or frame not available")
+                return
+            }
+            
+            // Get camera transform
+            let cameraTransform = currentFrame.camera.transform
+            
+            // Extract camera position
+            let cameraPosition = SIMD3<Float>(
+                cameraTransform.columns.3.x,
+                cameraTransform.columns.3.y,
+                cameraTransform.columns.3.z
+            )
+            
+            // Extract camera forward direction (negative Z in camera space)
+            let cameraForward = SIMD3<Float>(
+                -cameraTransform.columns.2.x,
+                -cameraTransform.columns.2.y,
+                -cameraTransform.columns.2.z
+            )
+            
+            // Normalize direction
+            let direction = normalize(cameraForward)
+            
+            // Position projectile slightly in front of camera
+            let spawnDistance: Float = 0.3  // 30cm in front
+            let spawnPosition = cameraPosition + (direction * spawnDistance)
+            
+            print("🎾 Throwing projectile:")
+            print("  Camera pos: \(cameraPosition)")
+            print("  Spawn pos: \(spawnPosition)")
+            print("  Direction: \(direction)")
+            
+            // Create projectile entity
+            let projectile = createProjectileEntity(usdzName: usdzName)
+            
+            // Set position
+            projectile.position = spawnPosition
+            
+            // Add physics - make it dynamic with collision
+            // Use bounding box for collision shape
+            let bounds = projectile.visualBounds(relativeTo: nil)
+            let size = bounds.extents
+            let physicsShape = ShapeResource.generateBox(size: size)
+            projectile.collision = CollisionComponent(shapes: [physicsShape])
+            
+            let physicsMaterial = PhysicsMaterialResource.generate(
+                friction: 0.5,
+                restitution: 0.8  // Bounciness
+            )
+            
+            projectile.physicsBody = PhysicsBodyComponent(
+                massProperties: .default,
+                material: physicsMaterial,
+                mode: .dynamic
+            )
+            
+            // Apply impulse for initial velocity
+            let throwForce: Float = 3.0  // Adjust this for throw strength
+            let impulse = direction * throwForce
+            projectile.applyLinearImpulse(impulse, relativeTo: nil)
+            
+            // Add slight upward arc
+            projectile.applyLinearImpulse([0, 0.5, 0], relativeTo: nil)
+            
+            // Create anchor and add projectile to scene
+            let anchor = AnchorEntity(world: spawnPosition)
+            anchor.addChild(projectile)
+            arView.scene.addAnchor(anchor)
+            
+            print("✅ Projectile added to scene with impulse: \(impulse)")
+            
+            // Remove projectile after 5 seconds to avoid clutter
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                anchor.removeFromParent()
+            }
+        }
+        
+        /// Create a projectile entity - either from USDZ or generated sphere
+        /// - Parameter usdzName: Optional USDZ filename (without extension)
+        /// - Returns: ModelEntity ready to be thrown
+        private func createProjectileEntity(usdzName: String?) -> ModelEntity {
+            if let usdzName = usdzName {
+                // Try to load USDZ model from bundle
+                if let modelEntity = loadUSDZModel(named: usdzName) {
+                    print("✅ Loaded USDZ model: \(usdzName)")
+                    return modelEntity
+                } else {
+                    print("⚠️ Failed to load USDZ '\(usdzName)', falling back to sphere")
+                }
+            }
+            
+            // Default: Create a generated sphere
+            let sphereRadius: Float = 0.05  // 5cm radius
+            return ModelEntity(
+                mesh: .generateSphere(radius: sphereRadius),
+                materials: [SimpleMaterial(color: .red, isMetallic: true)]
+            )
+        }
+        
+        /// Load a USDZ model from the app bundle
+        /// - Parameter name: Filename without extension (e.g., "ball", "rock", "toy_ball")
+        /// - Returns: ModelEntity if successful, nil otherwise
+        private func loadUSDZModel(named name: String) -> ModelEntity? {
+            // Try loading from bundle
+            guard let url = Bundle.main.url(forResource: name, withExtension: "usdz") else {
+                print("⚠️ USDZ file not found in bundle: \(name).usdz")
+                return nil
+            }
+            
+            do {
+                // Load entity and find ModelEntity
+                let loadedEntity = try Entity.load(contentsOf: url)
+                
+                // If it's already a ModelEntity, return it
+                if let modelEntity = loadedEntity as? ModelEntity {
+                    print("✅ Successfully loaded USDZ from: \(url.lastPathComponent)")
+                    return modelEntity
+                }
+                
+                // Otherwise, search for first ModelEntity in hierarchy
+                for child in loadedEntity.children {
+                    if let modelEntity = child as? ModelEntity {
+                        print("✅ Successfully loaded USDZ from: \(url.lastPathComponent)")
+                        return modelEntity
+                    }
+                }
+                
+                print("⚠️ No ModelEntity found in USDZ file: \(name)")
+                return nil
+            } catch {
+                print("❌ Error loading USDZ model '\(name)': \(error.localizedDescription)")
+                return nil
+            }
+        }
+        
+        /// Convenience method for backward compatibility - throws default sphere
+        func throwSphere() {
+            throwProjectile(usdzName: nil)
         }
     }
 }
@@ -334,20 +490,37 @@ struct ShootButtonView: View {
         // Calculate the actual center of the view (where the crosshair is)
         let screenCenter = CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
         
-        print("🎯 SHOOT! Center: \(screenCenter)")
-        print("📱 View size: \(viewSize)")
-        print("👥 Detected players: \(gameState.detectedPlayers.count)")
+        print("\n" + String(repeating: "=", count: 50))
+        print("🎯 SHOOTING!")
+        print(String(repeating: "=", count: 50))
+        print("📍 Screen Center: (\(Int(screenCenter.x)), \(Int(screenCenter.y)))")
+        print("📱 View Size: \(Int(viewSize.width)) x \(Int(viewSize.height))")
+        print("👥 Detected Players: \(gameState.detectedPlayers.count)")
+        print(String(repeating: "-", count: 50))
+        
+        // 🎾 Throw a 3D sphere in the AR scene
+        if let coordinator = gameState.arCoordinator as? ARViewContainer.Coordinator {
+            coordinator.throwSphere()
+        }
         
         // Check each detected player
-        for detected in gameState.detectedPlayers {
-            print("  - Player: \(detected.playerName)")
-            print("    Face rect: \(detected.faceRect)")
-            print("    Contains center: \(detected.faceRect.contains(screenCenter))")
+        for (index, detected) in gameState.detectedPlayers.enumerated() {
+            let contains = detected.faceRect.contains(screenCenter)
+            let distance = distanceFromCenter(rect: detected.faceRect, to: screenCenter)
+            
+            print("Player \(index + 1): \(detected.playerName)")
+            print("  📦 Face Rect: x=\(Int(detected.faceRect.minX)), y=\(Int(detected.faceRect.minY)), w=\(Int(detected.faceRect.width)), h=\(Int(detected.faceRect.height))")
+            print("  🎯 Contains Center: \(contains ? "✅ YES" : "❌ NO")")
+            print("  📏 Distance from center: \(Int(distance)) pixels")
         }
+        
+        print(String(repeating: "-", count: 50))
         
         // Check if screen center intersects with any detected player face
         if let targetPlayerID = gameState.findTargetPlayer(at: screenCenter) {
-            print("✅ HIT! Player: \(targetPlayerID)")
+            print("✅ ✅ ✅ HIT CONFIRMED! ✅ ✅ ✅")
+            print("Target Player ID: \(targetPlayerID)")
+            
             gameState.registerHit(on: targetPlayerID)
             
             // Strong haptic feedback for hit
@@ -360,12 +533,22 @@ struct ShootButtonView: View {
                 gameState.showHitEffect = false
             }
         } else {
-            print("❌ MISS - no player at crosshair")
+            print("❌ ❌ ❌ MISS ❌ ❌ ❌")
+            print("No face at crosshair position")
             
             // Light feedback for miss
             let impactFeedback = UIImpactFeedbackGenerator(style: .light)
             impactFeedback.impactOccurred()
         }
+        
+        print(String(repeating: "=", count: 50) + "\n")
+    }
+    
+    private func distanceFromCenter(rect: CGRect, to point: CGPoint) -> CGFloat {
+        let rectCenter = CGPoint(x: rect.midX, y: rect.midY)
+        let dx = point.x - rectCenter.x
+        let dy = point.y - rectCenter.y
+        return sqrt(dx * dx + dy * dy)
     }
 }
 
@@ -393,30 +576,135 @@ struct PlayerTargetOverlay: View {
     let detected: DetectedPlayer
     @EnvironmentObject var gameState: GameState
     
+    // Check if this face is being targeted
+    private var isTargeted: Bool {
+        // Get view size from environment if possible, otherwise use screen bounds
+        let screenCenter = CGPoint(x: UIScreen.main.bounds.width / 2, 
+                                   y: UIScreen.main.bounds.height / 2)
+        return detected.faceRect.contains(screenCenter)
+    }
+    
     var body: some View {
-        VStack(spacing: 4) {
-            // Player name
-            Text(detected.playerName)
-                .font(.caption)
-                .fontWeight(.bold)
+        VStack(spacing: 8) {
+            // Player name tag
+            HStack(spacing: 6) {
+                Image(systemName: isTargeted ? "scope" : "person.fill")
+                    .font(.caption)
+                Text(detected.playerName)
+                    .font(.headline)
+                    .fontWeight(.bold)
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(isTargeted ? Color.green : Color.red)
+            .cornerRadius(8)
+            .shadow(radius: 5)
+            
+            // Target lock indicator
+            if isTargeted {
+                HStack(spacing: 4) {
+                    Image(systemName: "target")
+                        .font(.caption2)
+                    Text("LOCKED")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                }
                 .foregroundColor(.white)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(Color.red.opacity(0.8))
+                .background(Color.green)
                 .cornerRadius(6)
+            }
             
             // Health bar
             let health = gameState.getHealth(for: detected.playerID)
-            ProgressView(value: Double(health), total: 100.0)
-                .progressViewStyle(LinearProgressViewStyle(tint: .green))
-                .frame(width: 80)
+            HStack(spacing: 4) {
+                Image(systemName: "heart.fill")
+                    .font(.caption2)
+                    .foregroundColor(.red)
+                ProgressView(value: Double(health), total: 100.0)
+                    .progressViewStyle(LinearProgressViewStyle(tint: health > 50 ? .green : .orange))
+                    .frame(width: 80)
+                Text("\(health)")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.white)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.black.opacity(0.7))
+            .cornerRadius(6)
         }
         .overlay(
-            // Bounding box
-            Rectangle()
-                .stroke(Color.red, lineWidth: 2)
-                .frame(width: detected.faceRect.width, height: detected.faceRect.height)
+            // Face bounding box - VERY VISIBLE
+            ZStack {
+                // Thick colored border
+                Rectangle()
+                    .stroke(isTargeted ? Color.green : Color.red, lineWidth: 4)
+                    .frame(width: detected.faceRect.width, height: detected.faceRect.height)
+                    .shadow(color: isTargeted ? .green : .red, radius: 8)
+                
+                // Corner brackets for targeting feel
+                CornerBrackets(
+                    width: detected.faceRect.width,
+                    height: detected.faceRect.height,
+                    color: isTargeted ? .green : .red
+                )
+                
+                // Pulsing effect when targeted
+                if isTargeted {
+                    Rectangle()
+                        .fill(Color.green.opacity(0.1))
+                        .frame(width: detected.faceRect.width, height: detected.faceRect.height)
+                }
+            }
         )
+        .animation(.easeInOut(duration: 0.3), value: isTargeted)
+    }
+}
+
+// MARK: - Corner Brackets
+
+struct CornerBrackets: View {
+    let width: CGFloat
+    let height: CGFloat
+    let color: Color
+    
+    var body: some View {
+        ZStack {
+            // Top-left
+            Path { path in
+                path.move(to: CGPoint(x: -width/2 + 20, y: -height/2))
+                path.addLine(to: CGPoint(x: -width/2, y: -height/2))
+                path.addLine(to: CGPoint(x: -width/2, y: -height/2 + 20))
+            }
+            .stroke(color, lineWidth: 6)
+            
+            // Top-right
+            Path { path in
+                path.move(to: CGPoint(x: width/2 - 20, y: -height/2))
+                path.addLine(to: CGPoint(x: width/2, y: -height/2))
+                path.addLine(to: CGPoint(x: width/2, y: -height/2 + 20))
+            }
+            .stroke(color, lineWidth: 6)
+            
+            // Bottom-left
+            Path { path in
+                path.move(to: CGPoint(x: -width/2 + 20, y: height/2))
+                path.addLine(to: CGPoint(x: -width/2, y: height/2))
+                path.addLine(to: CGPoint(x: -width/2, y: height/2 - 20))
+            }
+            .stroke(color, lineWidth: 6)
+            
+            // Bottom-right
+            Path { path in
+                path.move(to: CGPoint(x: width/2 - 20, y: height/2))
+                path.addLine(to: CGPoint(x: width/2, y: height/2))
+                path.addLine(to: CGPoint(x: width/2, y: height/2 - 20))
+            }
+            .stroke(color, lineWidth: 6)
+        }
     }
 }
 

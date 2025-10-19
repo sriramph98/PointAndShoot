@@ -26,6 +26,10 @@ class GameState: ObservableObject {
     // MARK: - Private Properties
     private var cancellables = Set<AnyCancellable>()
     
+    // MARK: - AR Coordinator Reference
+    // Weak reference to avoid retain cycle
+    weak var arCoordinator: AnyObject?
+    
     // MARK: - Initialization
     init() {
         // Subscribe to multipeer manager for network events
